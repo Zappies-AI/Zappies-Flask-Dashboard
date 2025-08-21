@@ -1,0 +1,231 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard - Zappy Dashboard{% endblock %}
+
+{% block content %}
+<div class="flex justify-between items-center mb-6">
+    <h1 class="text-3xl font-bold text-gray-800">Your Zappy Bot Dashboard</h1>
+    <a href="{{ url_for('logout') }}"
+       class="px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors shadow-sm">
+        Logout
+    </a>
+</div>
+
+{% if error %}
+<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative mb-6" role="alert">
+    <span class="block sm:inline">{{ error }}</span>
+</div>
+{% endif %}
+
+<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+    <!-- Total Messages Card -->
+    <div class="bg-gray-50 p-6 rounded-xl shadow-md transition-transform hover:scale-105">
+        <h2 class="text-lg font-semibold text-gray-700">Total Messages</h2>
+        <p class="text-3xl font-bold text-indigo-600 mt-2">{{ bot_stats.total_messages | default(0) }}</p>
+    </div>
+
+    <!-- Total Recipients Card -->
+    <div class="bg-gray-50 p-6 rounded-xl shadow-md transition-transform hover:scale-105">
+        <h2 class="text-lg font-semibold text-gray-700">Total Recipients</h2>
+        <p class="text-3xl font-bold text-indigo-600 mt-2">{{ bot_stats.total_recipients | default(0) }}</p>
+    </div>
+
+    <!-- Total Conversions Card -->
+    <div class="bg-gray-50 p-6 rounded-xl shadow-md transition-transform hover:scale-105">
+        <h2 class="text-lg font-semibold text-gray-700">Total Conversions</h2>
+        <p class="text-3xl font-bold text-indigo-600 mt-2">{{ bot_stats.total_conversions | default(0) }}</p>
+    </div>
+
+    <!-- Avg Response Time Card -->
+    <div class="bg-gray-50 p-6 rounded-xl shadow-md transition-transform hover:scale-105">
+        <h2 class="text-lg font-semibold text-gray-700">Avg. Response Time</h2>
+        <p class="text-3xl font-bold text-indigo-600 mt-2">{{ bot_stats.avg_response_time_ms | default(0) }} ms</p>
+    </div>
+</div>
+
+<div class="mt-8">
+    <h2 class="text-2xl font-bold text-gray-800 mb-4">Daily Conversations</h2>
+    <div class="bg-white p-6 rounded-xl shadow-inner">
+        <!-- Canvas for the chart -->
+        <canvas id="dailyConversationsChart" class="h-64"></canvas>
+    </div>
+</div>
+
+<div class="mt-8">
+    <h2 class="text-2xl font-bold text-gray-800 mb-4">All WhatsApp Users</h2>
+    <div class="bg-white p-6 rounded-xl shadow-inner overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        User Number
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Last Message
+                    </th>
+                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Status
+                    </th>
+                    <th scope="col" class="relative px-6 py-3">
+                        <span class="sr-only">View Conversation</span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                <!-- Dynamically loop through users passed from the backend -->
+                {% for user in whatsapp_users %}
+                <tr class="hover:bg-gray-100 cursor-pointer" onclick="showConversation('{{ user.wa_id }}')">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                        {{ user.wa_id }}
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {{ user.name }}
+                    </td>
+                    <!-- <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {{ user.status }}
+                    </td> -->
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <a href="#" class="text-indigo-600 hover:text-indigo-900">View</a>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4" class="px-6 py-4 whitespace-nowrap text-sm text-center text-gray-500 italic">
+                        No users found.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Conversation Modal -->
+<div id="conversationModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden z-50">
+    <div class="relative top-20 mx-auto p-5 border w-11/12 md:w-1/2 lg:w-1/3 shadow-lg rounded-md bg-white">
+        <div class="text-center">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Conversation with <span id="conversationUser"></span></h3>
+            <div id="chatHistory" class="mt-4 max-h-80 overflow-y-auto p-2 bg-gray-100 rounded-md text-left">
+                <!-- Chat messages will be dynamically inserted here -->
+            </div>
+            <div class="mt-4">
+                <button onclick="hideConversation()" class="px-4 py-2 bg-red-500 text-white text-base font-medium rounded-md w-full shadow-sm hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-6 text-center text-gray-500 text-sm">
+    Last updated: {{ bot_stats.updated_at | default('N/A') }}
+</div>
+
+<!-- Chart.js and JavaScript for dynamic content -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script>
+    // Placeholder function to fetch and render the chart
+    function renderDailyConversationsChart() {
+        // Retrieve dynamic data from the Flask template
+        const chartLabels = JSON.parse('{{ chart_labels | tojson }}');
+        const chartData = JSON.parse('{{ chart_data | tojson }}');
+
+        const data = {
+            labels: chartLabels,
+            datasets: [{
+                label: 'Conversations per Day',
+                data: chartData,
+                backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                borderColor: 'rgba(75, 192, 192, 1)',
+                borderWidth: 1,
+                tension: 0.4,
+                fill: true
+            }]
+        };
+
+        const config = {
+            type: 'line',
+            data: data,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'time', 
+                        time: {
+                            unit: 'day'
+                        },
+                        title: {
+                            display: true,
+                            text: 'Date'
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Conversation Count'
+                        }
+                    }
+                }
+            }
+        };
+
+        const chartCanvas = document.getElementById('dailyConversationsChart');
+        if (chartCanvas) {
+            new Chart(chartCanvas, config);
+        }
+    }
+
+    // Call the function when the page loads
+    window.onload = renderDailyConversationsChart;
+
+    // JavaScript to handle the conversation modal
+    function showConversation(userId) {
+        const modal = document.getElementById('conversationModal');
+        const conversationUser = document.getElementById('conversationUser');
+        const chatHistory = document.getElementById('chatHistory');
+        
+        // Clear previous chat history
+        chatHistory.innerHTML = '';
+        
+        // Update modal title
+        conversationUser.innerText = userId;
+        
+        // Fetch and populate the chat history
+        fetch('/api/conversation/' + userId)
+            .then(response => response.json())
+            .then(messages => {
+                if (messages && messages.length > 0) {
+                    messages.forEach(message => {
+                        const messageDiv = document.createElement('div');
+                        const isBot = message.from === 'bot';
+                        messageDiv.className = `mb-2 p-2 rounded-lg max-w-[80%] ${isBot ? 'bg-gray-200 text-gray-800 self-end' : 'bg-indigo-50 text-indigo-800 self-start'}`;
+                        messageDiv.innerHTML = `<p class="text-xs ${isBot ? 'text-right' : ''}">${isBot ? 'Bot' : 'User'}</p><p>${message.text}</p>`;
+                        chatHistory.appendChild(messageDiv);
+                    });
+                } else {
+                    chatHistory.innerHTML = '<p class="text-sm text-gray-500 italic">No conversation history found.</p>';
+                }
+                modal.classList.remove('hidden');
+            })
+            .catch(error => {
+                console.error('Error fetching conversation:', error);
+                chatHistory.innerHTML = '<p class="text-sm text-red-500">Error loading conversation.</p>';
+                modal.classList.remove('hidden');
+            });
+    }
+
+    function hideConversation() {
+        document.getElementById('conversationModal').classList.add('hidden');
+    }
+
+    // Hide the modal when clicking outside the content
+    document.getElementById('conversationModal').addEventListener('click', function(event) {
+        if (event.target === this) {
+            hideConversation();
+        }
+    });
+</script>
+{% endblock %}

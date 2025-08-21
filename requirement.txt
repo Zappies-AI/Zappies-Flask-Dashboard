@@ -1,6 +1,3 @@
-Flask
-Flask-Cors
-supabase
+flask
+supabase-py
 python-dotenv
-PyJWT
-Werkzeug

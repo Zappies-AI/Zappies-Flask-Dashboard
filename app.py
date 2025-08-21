@@ -1,155 +1,241 @@
-# app.py
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from supabase import create_client, Client
 import os
-import jwt
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
+from supabase import create_client, Client
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
-# Load environment variables from a .env file
+# Load environment variables from .env file
 load_dotenv()
 
 app = Flask(__name__)
-# Enable CORS for the frontend.
-CORS(app)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY')
 
-# Retrieve Supabase credentials from environment variables for security.
-SUPABASE_AUTH_URL = os.getenv("SUPABASE_AUTH_URL")
-SUPABASE_AUTH_ANON_KEY = os.getenv("SUPABASE_AUTH_ANON_KEY")
-SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+# Get Supabase credentials for the main authentication database
+# We'll use these to authenticate the user and retrieve their specific bot credentials
+supabase_url: str = os.environ.get('SUPABASE_URL')
+supabase_anon_key: str = os.environ.get('SUPABASE_ANON_KEY')
 
-# Initialize the Supabase client for the AUTHENTICATION database.
-try:
-    auth_supabase_client: Client = create_client(SUPABASE_AUTH_URL, SUPABASE_AUTH_ANON_KEY)
-except Exception as e:
-    print(f"Error initializing Supabase Auth Client: {e}")
-    auth_supabase_client = None
+# Initialize the Supabase client for authentication
+supabase: Client = create_client(supabase_url, supabase_anon_key)
 
-# A template for the .env file to be used in production.
-env_template = """
-# .env file template for the Flask backend.
-# This file should not be committed to version control.
+@app.route('/')
+def index():
+    """Redirects to the login page."""
+    return redirect(url_for('login'))
 
-# URL and anon key for your Supabase Authentication project.
-SUPABASE_AUTH_URL="YOUR_SUPABASE_AUTH_URL"
-SUPABASE_AUTH_ANON_KEY="YOUR_SUPABASE_AUTH_ANON_KEY"
+DEFAULT_PASSWORD = "p@ssword123"
 
-# JWT secret key for decoding tokens. Find this in your Supabase project settings.
-SUPABASE_JWT_SECRET="YOUR_SUPABASE_JWT_SECRET"
-"""
-
-@app.route('/api/login', methods=['POST'])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    """
-    Authenticates a user using Supabase's built-in authentication.
-    """
-    if auth_supabase_client is None:
-        return jsonify({'error': 'Backend not configured properly.'}), 500
-
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-
-    if not all([email, password]):
-        return jsonify({'error': 'Email and password are required'}), 400
-
-    try:
-        # Use Supabase's sign_in_with_password method
-        response = auth_supabase_client.auth.sign_in_with_password({'email': email, 'password': password})
-        session = response.session
-
-        if not session:
-            return jsonify({'error': 'Invalid email or password'}), 401
-
-        # Retrieve the user's custom data from your 'users' table
-        # using the user's ID from the Supabase session.
-        user_id = session.user.id
-        user_data_response = auth_supabase_client.table('users').select('*').eq('id', user_id).limit(1).execute()
-        user_data = user_data_response.data
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        error = None
         
-        if not user_data:
-            return jsonify({'error': 'User data not found'}), 404
+        try:
+            auth_response = supabase.auth.sign_in_with_password({'email': email, 'password': password})
 
-        user = user_data[0]
+            if auth_response and auth_response.session:
+                user_id = auth_response.session.user.id
+                
+                # Fetch the client's specific Supabase credentials
+                credentials_response = supabase.from_('client_credentials').select('*').eq('user_id', user_id).single().execute()
+                
+                if credentials_response.data:
+                    # IMPORTANT: Check if the user is logging in with the default password
+                    if password == DEFAULT_PASSWORD:
+                        # Set a flag in the session to force a password change
+                        session['force_password_change'] = True
+                        # Redirect to the new password change page
+                        return redirect(url_for('change_password'))
 
-        # Return the necessary details and the JWT access token to the frontend.
-        return jsonify({
-            'success': True,
-            'message': 'Login successful',
-            'access_token': session.access_token,
-            'company_id': user['company_id'],
-            'supabase_url': user['supabase_url'],
-            'supabase_anon_key': user['supabase_anon_key']
-        }), 200
+                    # If not using default password, proceed to dashboard
+                    client_creds = credentials_response.data
+                    session['user_id'] = user_id
+                    session['company_id'] = client_creds.get('company_id')
+                    session['supabase_url'] = client_creds.get('supabase_url')
+                    session['supabase_anon_key'] = client_creds.get('supabase_anon_key')
+                    session['force_password_change'] = False # Ensure flag is false for regular logins
+                    return redirect(url_for('dashboard'))
+                else:
+                    error = "No bot credentials found for this account. Please contact support."
+            else:
+                error = "Invalid email or password."
+        
+        except Exception as e:
+            error = "Authentication failed. Please check your credentials."
+            print(f"Authentication error: {e}")
 
-    except Exception as e:
-        print(f"Login error: {e}")
-        return jsonify({'error': 'An internal server error occurred during login'}), 500
+        return render_template('login.html', error=error)
+    return render_template('login.html')
 
-@app.route('/api/dashboard_data', methods=['POST'])
-def get_dashboard_data():
-    """
-    Fetches bot statistics for a specific company from their
-    dedicated Supabase project. Requires a valid JWT token.
-    """
-    # Check for the Authorization header with a Bearer token
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        return jsonify({'error': 'Authorization token is missing or invalid'}), 401
+@app.route('/change-password', methods=['GET', 'POST'])
+def change_password():
+    # Check if the user is authenticated and if they are required to change their password
+    if 'user_id' not in session or not session.get('force_password_change'):
+        return redirect(url_for('dashboard'))
+
+    error = None
+    success = None
     
-    token = auth_header.split(" ")[1]
+    if request.method == 'POST':
+        new_password = request.form.get('new_password')
+        confirm_password = request.form.get('confirm_password')
 
-    try:
-        # Verify the token using your Supabase JWT secret
-        decoded_token = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")
-        user_id = decoded_token['sub']
-    except jwt.ExpiredSignatureError:
-        return jsonify({'error': 'Token has expired'}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({'error': 'Invalid token'}), 401
-    
-    # We will get the credentials from the request body as before,
-    # but in a production application, you would fetch these from a
-    # secure database based on the user_id from the token.
-    data = request.get_json()
-    company_id = data.get('company_id')
-    supabase_url = data.get('supabase_url')
-    supabase_anon_key = data.get('supabase_anon_key')
-
-    if not all([company_id, supabase_url, supabase_anon_key]):
-        return jsonify({'error': 'Missing required data'}), 400
-
-    try:
-        # Initialize the Supabase client for the BOT'S data database.
-        bot_supabase_client: Client = create_client(supabase_url, supabase_anon_key)
-        
-        # Query the 'bot_statistics' table.
-        # We assume this table has a company_id column as per your security model.
-        response = bot_supabase_client.table('bot_statistics').select('*').eq('company_id', company_id).limit(1).execute()
-        
-        if response.data:
-            bot_stats = response.data[0]
-            
-            # Dummy data for the chart, as per the previous version.
-            chart_data = [
-                {"date": "2023-01-01", "total_messages": bot_stats["total_messages"] * 0.8},
-                {"date": "2023-01-02", "total_messages": bot_stats["total_messages"] * 0.9},
-                {"date": "2023-01-03", "total_messages": bot_stats["total_messages"]},
-            ]
-
-            return jsonify({
-                'success': True,
-                'stats': bot_stats,
-                'chartData': chart_data
-            }), 200
+        if new_password != confirm_password:
+            error = "Passwords do not match."
+        elif len(new_password) < 6:
+            error = "Password must be at least 6 characters long."
         else:
-            return jsonify({'error': 'No statistics found for this company.'}), 404
+            try:
+                # Use the Supabase admin client to update the user's password
+                supabase.auth.admin.update_user_by_id(session['user_id'], {'password': new_password})
+                
+                # Password successfully updated, clear the flag
+                session['force_password_change'] = False
+                success = "Your password has been changed successfully."
+                return redirect(url_for('dashboard'))
+                
+            except Exception as e:
+                error = "Failed to update password. Please try again."
+                print(f"Password update error: {e}")
+    
+    return render_template('change_password.html', error=error, success=success)
+
+@app.route('/dashboard')
+def dashboard():
+    """
+    Displays the client dashboard.
+    
+    This route dynamically connects to the client's specific database using credentials
+    stored in the session and fetches the relevant data.
+    """
+    # Check if the user is authenticated
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    # Retrieve client's unique credentials from the session
+    supabase_url_client = session.get('supabase_url')
+    supabase_anon_key_client = session.get('supabase_anon_key')
+    company_id = session.get('company_id')
+
+    # Guard against missing credentials
+    if not supabase_url_client or not supabase_anon_key_client or not company_id:
+        session.clear()
+        return redirect(url_for('login'))
+
+    # Initialize data variables with default values to avoid Jinja2 errors
+    bot_stats = {
+        'total_messages': 0, 'total_recipients': 0, 'total_conversions': 0, 
+        'avg_response_time_ms': 0, 'updated_at': 'N/A'
+    }
+    chart_labels = []
+    chart_data = []
+    whatsapp_users = []
+    error = None
+
+    try:
+        # Create a new Supabase client instance dynamically for the client's database
+        client_bot_db: Client = create_client(supabase_url_client, supabase_anon_key_client)
+
+        # Fetch all statistics from the client's database, filtered by company_id
+        stats_response = client_bot_db.from_('bot_statistics').select('*').eq('company_id', company_id).execute()
+        if stats_response.data:
+            # Safely get the first element if the list is not empty
+            bot_stats = stats_response.data[0]
+        
+        # Fetch conversation counts for the last 7 days for the chart
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        conversations_response = client_bot_db.from_('conversations').select('updated_at').eq('company_id', company_id).gt('updated_at', seven_days_ago.isoformat()).execute()
+
+        # Process data for the chart
+        conversation_counts = {}
+        for conv in conversations_response.data:
+            date_str = conv['updated_at'].split('T')[0]
+            if date_str in conversation_counts:
+                conversation_counts[date_str] += 1
+            else:
+                conversation_counts[date_str] = 1
+
+        chart_labels = sorted(conversation_counts.keys())
+        chart_data = [conversation_counts[date] for date in chart_labels]
+
+        # Fetch a list of all WhatsApp users using the correct column names
+        users_response = client_bot_db.from_('whatsapp_users').select('*').eq('company_id', company_id).execute()
+        whatsapp_users = users_response.data or []
+        
+    except Exception as e:
+        print(f"Error fetching data for dashboard: {e}")
+        error = "Could not retrieve dashboard data. Please try again later."
+    
+    return render_template(
+        'dashboard.html', 
+        bot_stats=bot_stats,
+        chart_labels=chart_labels,
+        chart_data=chart_data,
+        whatsapp_users=whatsapp_users,
+        error=error
+    )
+
+@app.route('/logout')
+def logout():
+    """Logs the user out by clearing the session."""
+    session.clear()
+    return redirect(url_for('login'))
+
+@app.route('/api/conversation/<user_id>')
+def get_conversation(user_id):
+    """
+    Fetches the conversation history for a specific user based on the database schema.
+    """
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    supabase_url_client = session.get('supabase_url')
+    supabase_anon_key_client = session.get('supabase_anon_key')
+
+    if not supabase_url_client or not supabase_anon_key_client:
+        return jsonify({'error': 'Missing credentials'}), 401
+
+    try:
+        client_bot_db: Client = create_client(supabase_url_client, supabase_anon_key_client)
+        
+        # Step 1: Find the internal user ID (whatsapp_users.id) using the wa_id
+        wa_user_response = client_bot_db.from_('whatsapp_users').select('id').eq('wa_id', user_id).single().execute()
+        
+        if not wa_user_response.data:
+            # If no user is found with that wa_id, return an empty list
+            return jsonify([])
+        
+        wa_user_id = wa_user_response.data.get('id')
+
+        # Step 2: Find the conversation ID (conversations.id) using the internal user ID
+        conversation_response = client_bot_db.from_('conversations').select('id').eq('user_id', wa_user_id).single().execute()
+        
+        if not conversation_response.data:
+            # If no conversation is found, return an empty list
+            return jsonify([])
+
+        conversation_id = conversation_response.data.get('id')
+        
+        # Step 3: Fetch the messages using the retrieved conversation_id
+        messages_response = client_bot_db.from_('messages').select('content, sender_type, timestamp').eq('conversation_id', conversation_id).order('timestamp', desc=False).execute()
+        
+        # Reformat the messages for the front-end
+        formatted_messages = []
+        for msg in messages_response.data:
+            formatted_messages.append({
+                'from': 'bot' if msg['sender_type'] == 'bot' else 'user',
+                'text': msg['content']
+            })
+
+        return jsonify(formatted_messages)
 
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return jsonify({'error': 'An internal server error occurred'}), 500
+        print(f"Error fetching conversation: {e}")
+        return jsonify({'error': 'Error fetching conversation'}), 500
 
 if __name__ == '__main__':
-    # You might need to set your SUPABASE_AUTH_URL and SUPABASE_AUTH_ANON_KEY
-    # as environment variables or directly in the code for local testing.
-    app.run(debug=True, port=5000)
+    # You should run this in production with a proper WSGI server (e.g., Gunicorn)
+    # For development, you can use:
+    app.run(debug=True)
