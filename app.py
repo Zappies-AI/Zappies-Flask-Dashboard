@@ -10,12 +10,13 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY')
 
-# Get Supabase credentials for the main authentication database
-# We'll use these to authenticate the user and retrieve their specific bot credentials
+# Get Supabase credentials
 supabase_url: str = os.environ.get('SUPABASE_URL')
 supabase_anon_key: str = os.environ.get('SUPABASE_ANON_KEY')
+# --- NEW: Get the Service Role Key ---
+supabase_service_role_key: str = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
 
-# Initialize the Supabase client for authentication
+# Initialize the Supabase client for authentication (using anon key)
 supabase: Client = create_client(supabase_url, supabase_anon_key)
 
 @app.route('/')
@@ -25,6 +26,7 @@ def index():
 
 DEFAULT_PASSWORD = "p@ssword123"
 
+# In your login() route
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -42,21 +44,24 @@ def login():
                 credentials_response = supabase.from_('client_credentials').select('*').eq('user_id', user_id).single().execute()
                 
                 if credentials_response.data:
-                    # IMPORTANT: Check if the user is logging in with the default password
-                    if password == DEFAULT_PASSWORD:
-                        # Set a flag in the session to force a password change
-                        session['force_password_change'] = True
-                        # Redirect to the new password change page
-                        return redirect(url_for('change_password'))
-
-                    # If not using default password, proceed to dashboard
                     client_creds = credentials_response.data
+                    
+                    # --- FIX: Set the session variables here, for all successful logins ---
                     session['user_id'] = user_id
                     session['company_id'] = client_creds.get('company_id')
                     session['supabase_url'] = client_creds.get('supabase_url')
                     session['supabase_anon_key'] = client_creds.get('supabase_anon_key')
-                    session['force_password_change'] = False # Ensure flag is false for regular logins
-                    return redirect(url_for('dashboard'))
+                    # --- END FIX ---
+                    
+                    # Check if the user is logging in with the default password
+                    if password == DEFAULT_PASSWORD:
+                        # Set a flag to force a password change
+                        session['force_password_change'] = True
+                        return redirect(url_for('change_password'))
+                    else:
+                        # If not using default password, proceed to dashboard
+                        session['force_password_change'] = False
+                        return redirect(url_for('dashboard'))
                 else:
                     error = "No bot credentials found for this account. Please contact support."
             else:
@@ -71,7 +76,6 @@ def login():
 
 @app.route('/change-password', methods=['GET', 'POST'])
 def change_password():
-    # Check if the user is authenticated and if they are required to change their password
     if 'user_id' not in session or not session.get('force_password_change'):
         return redirect(url_for('dashboard'))
 
@@ -88,8 +92,15 @@ def change_password():
             error = "Password must be at least 6 characters long."
         else:
             try:
-                # Use the Supabase admin client to update the user's password
-                supabase.auth.admin.update_user_by_id(session['user_id'], {'password': new_password})
+                # --- FIX: Create a new client instance with the service role key ---
+                # This client has the necessary permissions to update user passwords
+                supabase_admin: Client = create_client(supabase_url, supabase_service_role_key)
+                
+                # Use the admin client to update the user's password
+                supabase_admin.auth.admin.update_user_by_id(session['user_id'], {'password': new_password})
+                
+                # Also use the admin client to update the custom flag in the client_credentials table
+                supabase_admin.from_('client_credentials').update({'is_default_password': False}).eq('user_id', session['user_id']).execute()
                 
                 # Password successfully updated, clear the flag
                 session['force_password_change'] = False

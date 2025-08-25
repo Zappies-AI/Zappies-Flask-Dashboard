@@ -15,7 +15,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 # Define the user and bot credentials
 test_email = "roseovis@gmail.com"
-test_password = "p@ssword1234"
+test_password = "p@ssword123"
 test_company_id = 2
 test_bot_url = "https://xirlamryohwhveunabha.supabase.co"
 test_bot_anon_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhpcmxhbXJ5b2h3aHZldW5hYmhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU1OTQ5NzcsImV4cCI6MjA3MTE3MDk3N30.nZLcgCOrsZvglYR60T47TFir_bNfG_E4jHLZ5HStgpM"
